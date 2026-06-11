@@ -22,6 +22,7 @@
       "@aoagents/ao-plugin-tracker-github",
       "@aoagents/ao-plugin-tracker-linear",
       "@aoagents/ao-plugin-tracker-gitlab",
+      "@aoagents/ao-plugin-tracker-jira",
       "@aoagents/ao-plugin-scm-github",
       "@aoagents/ao-plugin-scm-gitlab",
       "@aoagents/ao-plugin-notifier-desktop",

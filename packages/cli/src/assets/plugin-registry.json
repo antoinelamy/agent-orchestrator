@@ -63,5 +63,13 @@
     "description": "SCM plugin: GitLab pull/merge requests",
     "source": "registry",
     "latestVersion": "0.1.1"
+  },
+  {
+    "id": "tracker-jira",
+    "package": "@aoagents/ao-plugin-tracker-jira",
+    "slot": "tracker",
+    "description": "Tracker plugin: Jira work items",
+    "source": "registry",
+    "latestVersion": "0.9.1"
   }
 ]

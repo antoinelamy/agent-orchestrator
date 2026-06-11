@@ -68,6 +68,15 @@ projects:
     # tracker:
     #   plugin: linear
     #   teamId: "your-team-id"
+    #
+    # Jira (via the official `acli` CLI — run `acli auth login` first):
+    # tracker:
+    #   plugin: jira
+    #   site: mycompany           # <site>.atlassian.net, or a full base URL
+    #   projectKey: PROJ          # scopes listIssues; required by createIssue
+    #   labels: [backlog, ready]  # persistent label filter ANDed into listIssues
+    #   # defaultIssueType: Task  # type used by createIssue
+    #   # doneStatus: Done        # transition target when closing an issue
 
     # SCM webhook acceleration (optional)
     # scm:
