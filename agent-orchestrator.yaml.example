@@ -77,6 +77,14 @@ projects:
     #   labels: [backlog, ready]  # persistent label filter ANDed into listIssues
     #   # defaultIssueType: Task  # type used by createIssue
     #   # doneStatus: Done        # transition target when closing an issue
+    #   # Drive the AO backlog lifecycle by Jira workflow STATUS instead of
+    #   # labels. Maps each agent:* phase to a status in YOUR workflow, so the
+    #   # poller selects/claims issues via status transitions (per-project).
+    #   # statusMapping:
+    #   #   "agent:backlog": "Selected for Development"
+    #   #   "agent:in-progress": "In Progress"
+    #   #   "merged-unverified": "QA"
+    #   #   "agent:done": "Done"
 
     # SCM webhook acceleration (optional)
     # scm:

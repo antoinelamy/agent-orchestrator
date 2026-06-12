@@ -470,6 +470,135 @@ describe("tracker-jira plugin", () => {
     });
   });
 
+  // ---- statusMapping -----------------------------------------------------
+
+  describe("statusMapping", () => {
+    const statusMap = {
+      "agent:backlog": "Selected for Development",
+      "agent:in-progress": "In Progress",
+      "merged-unverified": "QA",
+      "agent:done": "Done",
+    };
+
+    function jqlFromLastCall(): string {
+      const args = acliMock.mock.calls[0][1] as string[];
+      return args[args.indexOf("--jql") + 1];
+    }
+
+    describe("listIssues", () => {
+      it("selects a mapped lifecycle label by status, not by label", async () => {
+        const t = create({ site: "acme", projectKey: "PROJ", statusMapping: statusMap });
+        mockAcli([]);
+        await t.listIssues!({ state: "open", labels: ["agent:backlog"] }, project);
+        const jql = jqlFromLastCall();
+        expect(jql).toContain('status in ("Selected for Development")');
+        expect(jql).not.toContain('labels in ("agent:backlog")');
+      });
+
+      it("keeps unmapped labels as a label clause", async () => {
+        const t = create({ site: "acme", projectKey: "PROJ", statusMapping: statusMap });
+        mockAcli([]);
+        await t.listIssues!({ labels: ["agent:backlog", "needs-triage"] }, project);
+        const jql = jqlFromLastCall();
+        expect(jql).toContain('status in ("Selected for Development")');
+        expect(jql).toContain('labels in ("needs-triage")');
+      });
+
+      it("reads statusMapping from project.tracker (dashboard create(undefined) path)", async () => {
+        const t = create();
+        const projWithMapping = {
+          ...project,
+          tracker: { plugin: "jira", site: "acme", projectKey: "PROJ", statusMapping: statusMap },
+        };
+        mockAcli([]);
+        await t.listIssues!({ labels: ["agent:backlog"] }, projWithMapping);
+        expect(jqlFromLastCall()).toContain('status in ("Selected for Development")');
+      });
+    });
+
+    describe("updateIssue", () => {
+      it("transitions instead of editing labels when claiming", async () => {
+        const t = create({ site: "acme", projectKey: "PROJ", statusMapping: statusMap });
+        acliMock.mockResolvedValue({ stdout: "" });
+        await t.updateIssue!(
+          "PROJ-1",
+          { labels: ["agent:in-progress"], removeLabels: ["agent:backlog"], comment: "Claimed" },
+          project,
+        );
+        expect(acliMock).toHaveBeenCalledWith(
+          "acli",
+          ["jira", "workitem", "transition", "--key", "PROJ-1", "--status", "In Progress", "--yes"],
+          expect.any(Object),
+        );
+        expect(acliMock).toHaveBeenCalledWith(
+          "acli",
+          ["jira", "workitem", "comment", "create", "--key", "PROJ-1", "--body", "Claimed"],
+          expect.any(Object),
+        );
+        // No label edits — mapped labels are status-driven, mapped removes are no-ops.
+        const editedLabels = acliMock.mock.calls.some(
+          (c) => (c[1] as string[]).includes("--labels") || (c[1] as string[]).includes("--remove-labels"),
+        );
+        expect(editedLabels).toBe(false);
+        expect(acliMock).toHaveBeenCalledTimes(2); // transition + comment
+      });
+
+      it("transitions to the merged-unverified status on merge", async () => {
+        const t = create({ site: "acme", projectKey: "PROJ", statusMapping: statusMap });
+        acliMock.mockResolvedValue({ stdout: "" });
+        await t.updateIssue!(
+          "PROJ-1",
+          { labels: ["merged-unverified"], removeLabels: ["agent:backlog", "agent:in-progress"] },
+          project,
+        );
+        expect(acliMock).toHaveBeenCalledWith(
+          "acli",
+          expect.arrayContaining(["transition", "--status", "QA"]),
+          expect.any(Object),
+        );
+        expect(acliMock).toHaveBeenCalledTimes(1); // only the transition
+      });
+
+      it("still edits unmapped labels alongside a mapped transition", async () => {
+        const t = create({ site: "acme", projectKey: "PROJ", statusMapping: statusMap });
+        acliMock.mockResolvedValue({ stdout: "" });
+        await t.updateIssue!("PROJ-1", { labels: ["agent:in-progress", "needs-design"] }, project);
+        expect(acliMock).toHaveBeenCalledWith(
+          "acli",
+          expect.arrayContaining(["transition", "--status", "In Progress"]),
+          expect.any(Object),
+        );
+        expect(acliMock).toHaveBeenCalledWith(
+          "acli",
+          expect.arrayContaining(["--labels", "needs-design"]),
+          expect.any(Object),
+        );
+      });
+
+      it("lets an explicit state win over a mapped label", async () => {
+        const t = create({ site: "acme", projectKey: "PROJ", statusMapping: statusMap });
+        acliMock.mockResolvedValue({ stdout: "" });
+        await t.updateIssue!("PROJ-1", { state: "closed", labels: ["agent:in-progress"] }, project);
+        const transitions = acliMock.mock.calls.filter((c) =>
+          (c[1] as string[]).includes("transition"),
+        );
+        expect(transitions).toHaveLength(1);
+        expect(transitions[0][1]).toEqual(expect.arrayContaining(["--status", "Done"]));
+      });
+
+      it("falls back to label edits when no statusMapping is configured", async () => {
+        const t = create({ site: "acme" });
+        acliMock.mockResolvedValue({ stdout: "" });
+        await t.updateIssue!("PROJ-1", { labels: ["agent:in-progress"] }, project);
+        expect(acliMock).toHaveBeenCalledWith(
+          "acli",
+          expect.arrayContaining(["--labels", "agent:in-progress"]),
+          expect.any(Object),
+        );
+      });
+    });
+  });
+
   // ---- createIssue -------------------------------------------------------
 
   describe("createIssue", () => {

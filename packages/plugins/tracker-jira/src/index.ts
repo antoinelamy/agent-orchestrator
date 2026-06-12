@@ -12,6 +12,11 @@
  *   - projectKey:        default project key for `listIssues` / `createIssue`
  *   - labels:            persistent label filter (string or string[]) ANDed
  *                        into every `listIssues` query
+ *   - statusMapping:     map of AO lifecycle labels (e.g. "agent:backlog") to
+ *                        Jira workflow status names. When set, the matching
+ *                        labels drive issue selection by `status` and marking by
+ *                        a workflow transition instead of by label. Per-project,
+ *                        since every workflow differs.
  *   - defaultIssueType:  work item type for `createIssue` (default "Task")
  *   - doneStatus:        transition target for state "closed" (default "Done")
  *   - reopenStatus:      transition target for state "open" (default "To Do")
@@ -122,6 +127,38 @@ function readStringArray(value: unknown): string[] | undefined {
   return items.length > 0 ? items : undefined;
 }
 
+/**
+ * Normalize a `statusMapping` config value: a record mapping AO lifecycle label
+ * strings (e.g. "agent:backlog") to Jira workflow status names. Non-string
+ * values are dropped.
+ */
+function readStatusMapping(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw === "string" && raw.length > 0) out[key] = raw;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Split a set of label tokens into Jira statuses (those present in the mapping)
+ * and plain labels (everything else).
+ */
+function partitionByStatusMapping(
+  labels: readonly string[],
+  mapping: Record<string, string>,
+): { statuses: string[]; plainLabels: string[] } {
+  const statuses: string[] = [];
+  const plainLabels: string[] = [];
+  for (const label of labels) {
+    const status = mapping[label];
+    if (status) statuses.push(status);
+    else plainLabels.push(label);
+  }
+  return { statuses, plainLabels };
+}
+
 // ---------------------------------------------------------------------------
 // acli auth check (shared across calls in the same process)
 // ---------------------------------------------------------------------------
@@ -151,6 +188,7 @@ function createJiraTracker(config?: Record<string, unknown>): Tracker {
   const instanceSite = readString(config?.site);
   const instanceProjectKey = readString(config?.projectKey);
   const instanceLabels = readStringArray(config?.labels);
+  const instanceStatusMapping = readStatusMapping(config?.statusMapping);
   const defaultIssueType = readString(config?.defaultIssueType) ?? "Task";
   const doneStatus = readString(config?.doneStatus) ?? "Done";
   const reopenStatus = readString(config?.reopenStatus) ?? "To Do";
@@ -167,6 +205,15 @@ function createJiraTracker(config?: Record<string, unknown>): Tracker {
   /** Persistent label filter from config, ANDed into every listIssues query. */
   function resolveConfigLabels(project: ProjectConfig): string[] {
     return instanceLabels ?? readStringArray(project.tracker?.labels) ?? [];
+  }
+
+  /**
+   * Per-project map of AO lifecycle labels → Jira statuses. When a lifecycle
+   * label is mapped, the plugin selects/marks issues by STATUS (JQL `status`
+   * clause / a workflow transition) instead of by label. Empty map = label mode.
+   */
+  function resolveStatusMapping(project: ProjectConfig): Record<string, string> {
+    return instanceStatusMapping ?? readStatusMapping(project.tracker?.statusMapping) ?? {};
   }
 
   function requireProjectKey(project: ProjectConfig): string {
@@ -267,6 +314,7 @@ function createJiraTracker(config?: Record<string, unknown>): Tracker {
 
     async listIssues(filters: IssueFilters, project: ProjectConfig): Promise<Issue[]> {
       const clauses: string[] = [];
+      const statusMapping = resolveStatusMapping(project);
 
       const projectKey = resolveProjectKey(project);
       if (projectKey) clauses.push(`project = ${jqlString(projectKey)}`);
@@ -278,16 +326,22 @@ function createJiraTracker(config?: Record<string, unknown>): Tracker {
         clauses.push("statusCategory != Done");
       }
 
-      if (filters.labels && filters.labels.length > 0) {
-        clauses.push(`labels in (${filters.labels.map(jqlString).join(", ")})`);
-      }
+      // A label maps to a Jira status → select by `status`; otherwise by `labels`.
+      // Runtime filter labels and the persistent config label filter are emitted
+      // as separate AND clauses so they narrow rather than replace one another.
+      const addLabelClause = (labels: string[]): void => {
+        if (labels.length === 0) return;
+        const { statuses, plainLabels } = partitionByStatusMapping(labels, statusMapping);
+        if (statuses.length > 0) {
+          clauses.push(`status in (${statuses.map(jqlString).join(", ")})`);
+        }
+        if (plainLabels.length > 0) {
+          clauses.push(`labels in (${plainLabels.map(jqlString).join(", ")})`);
+        }
+      };
 
-      // Persistent label filter from config — separate AND clause so a runtime
-      // label filter narrows within the configured labels rather than replacing them.
-      const configLabels = resolveConfigLabels(project);
-      if (configLabels.length > 0) {
-        clauses.push(`labels in (${configLabels.map(jqlString).join(", ")})`);
-      }
+      addLabelClause(filters.labels ?? []);
+      addLabelClause(resolveConfigLabels(project));
 
       if (filters.assignee) {
         clauses.push(`assignee = ${jqlString(filters.assignee)}`);
@@ -317,15 +371,30 @@ function createJiraTracker(config?: Record<string, unknown>): Tracker {
     async updateIssue(
       identifier: string,
       update: IssueUpdate,
-      _project: ProjectConfig,
+      project: ProjectConfig,
     ): Promise<void> {
+      const statusMapping = resolveStatusMapping(project);
+
+      // Split label add/remove sets: mapped lifecycle labels drive a workflow
+      // transition; everything else is a plain label edit.
+      const addLabels = partitionByStatusMapping(update.labels ?? [], statusMapping);
+      const removeLabels = partitionByStatusMapping(update.removeLabels ?? [], statusMapping);
+
+      // Pick a transition target: an explicit `state` wins, else the first
+      // mapped lifecycle label (a status is exclusive, so only one applies).
+      let transitionStatus: string | undefined;
       if (update.state) {
-        const status =
+        transitionStatus =
           update.state === "closed"
             ? doneStatus
             : update.state === "in_progress"
               ? inProgressStatus
               : reopenStatus;
+      } else if (addLabels.statuses.length > 0) {
+        transitionStatus = addLabels.statuses[0];
+      }
+
+      if (transitionStatus) {
         await acli([
           "jira",
           "workitem",
@@ -333,12 +402,14 @@ function createJiraTracker(config?: Record<string, unknown>): Tracker {
           "--key",
           identifier,
           "--status",
-          status,
+          transitionStatus,
           "--yes",
         ]);
       }
 
-      if (update.removeLabels && update.removeLabels.length > 0) {
+      // Mapped labels in removeLabels are no-ops (transitioning off the old
+      // status is implicit). Only plain labels are removed.
+      if (removeLabels.plainLabels.length > 0) {
         await acli([
           "jira",
           "workitem",
@@ -346,13 +417,13 @@ function createJiraTracker(config?: Record<string, unknown>): Tracker {
           "--key",
           identifier,
           "--remove-labels",
-          update.removeLabels.join(","),
+          removeLabels.plainLabels.join(","),
           "--yes",
         ]);
       }
 
       // Jira's `edit --labels` replaces the label set (no native add flag).
-      if (update.labels && update.labels.length > 0) {
+      if (addLabels.plainLabels.length > 0) {
         await acli([
           "jira",
           "workitem",
@@ -360,7 +431,7 @@ function createJiraTracker(config?: Record<string, unknown>): Tracker {
           "--key",
           identifier,
           "--labels",
-          update.labels.join(","),
+          addLabels.plainLabels.join(","),
           "--yes",
         ]);
       }
