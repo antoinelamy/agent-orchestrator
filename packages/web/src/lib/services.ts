@@ -132,6 +132,15 @@ async function initServices(): Promise<Services> {
   // metadata the CLI has written — stale data is expected when CLI is down.
   const lifecycleManager = createLifecycleManager({ config, registry, sessionManager });
 
+  // Auto-start the backlog auto-claim poller when the dashboard's services boot
+  // (the first request after `ao start`), so it polls the tracker without a
+  // manual GET /api/backlog. startBacklogPoller() is idempotent and self-guards
+  // against double-starts. Skipped under test to avoid leaking a 60s interval
+  // timer into the suite.
+  if (process.env.NODE_ENV !== "test" && !process.env.VITEST) {
+    startBacklogPoller();
+  }
+
   return { config, registry, sessionManager, lifecycleManager };
 }
 
