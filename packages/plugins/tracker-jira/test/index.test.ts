@@ -257,6 +257,31 @@ describe("tracker-jira plugin", () => {
     it("includes the Jira key", () => {
       expect(tracker.branchName("PROJ-42", project)).toBe("feat/PROJ-42");
     });
+
+    it("honors a custom branchPrefix from config", () => {
+      const t = create({ site: "acme", projectKey: "PROJ", branchPrefix: "feature" });
+      expect(t.branchName("PROJ-42", project)).toBe("feature/PROJ-42");
+    });
+
+    it("trims a trailing slash from branchPrefix", () => {
+      const t = create({ site: "acme", branchPrefix: "feature/" });
+      expect(t.branchName("PROJ-42", project)).toBe("feature/PROJ-42");
+    });
+
+    it("falls back to feat when branchPrefix is empty", () => {
+      const t = create({ site: "acme", branchPrefix: "" });
+      expect(t.branchName("PROJ-42", project)).toBe("feat/PROJ-42");
+    });
+
+    it("honors a branchTemplate with a {key} placeholder", () => {
+      const t = create({ site: "acme", branchTemplate: "agents/{key}-wip" });
+      expect(t.branchName("PROJ-42", project)).toBe("agents/PROJ-42-wip");
+    });
+
+    it("branchTemplate takes precedence over branchPrefix", () => {
+      const t = create({ site: "acme", branchPrefix: "feature", branchTemplate: "x/{key}" });
+      expect(t.branchName("PROJ-42", project)).toBe("x/PROJ-42");
+    });
   });
 
   // ---- generatePrompt ----------------------------------------------------

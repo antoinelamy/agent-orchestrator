@@ -193,6 +193,12 @@ function createJiraTracker(config?: Record<string, unknown>): Tracker {
   const doneStatus = readString(config?.doneStatus) ?? "Done";
   const reopenStatus = readString(config?.reopenStatus) ?? "To Do";
   const inProgressStatus = readString(config?.inProgressStatus) ?? "In Progress";
+  // Branch naming. `branchTemplate` (with a {key} placeholder) wins for full
+  // control; otherwise `branchPrefix` swaps the leading segment (default
+  // "feat"). Lets a repo align AO branches with a stricter hook, e.g.
+  // `branchPrefix: feature` → "feature/PROJ-42".
+  const branchTemplate = readString(config?.branchTemplate);
+  const branchPrefix = (readString(config?.branchPrefix) ?? "feat").replace(/\/+$/, "");
 
   function resolveSite(project: ProjectConfig): string | undefined {
     return instanceSite ?? readString(project.tracker?.site);
@@ -285,7 +291,10 @@ function createJiraTracker(config?: Record<string, unknown>): Tracker {
 
     branchName(identifier: string, _project: ProjectConfig): string {
       // Keep the Jira key intact so Jira auto-links the branch/PR to the issue.
-      return `feat/${identifier}`;
+      if (branchTemplate) {
+        return branchTemplate.replace(/\{(?:key|identifier|id)\}/g, identifier);
+      }
+      return `${branchPrefix}/${identifier}`;
     },
 
     async generatePrompt(identifier: string, project: ProjectConfig): Promise<string> {
