@@ -267,4 +267,41 @@ describe("pollBacklog", () => {
       expect.objectContaining({ tracker: { plugin: "github" } }),
     );
   });
+
+  it("transitions an issue to in-review when its session's PR is open", async () => {
+    mockCreateSessionManager.mockReturnValue({
+      spawn: mockSpawn,
+      list: vi.fn().mockResolvedValue([
+        {
+          id: "test-project-1",
+          projectId: "test-project",
+          issueId: "456",
+          status: "working",
+          lifecycle: { pr: { state: "open" } },
+        },
+      ]),
+    });
+    // No backlog issues to claim and no reopened issues to relabel.
+    mockListIssues.mockResolvedValue([]);
+
+    mockRegistry.get.mockImplementation((slot: string) => {
+      if (slot === "tracker") {
+        return { name: "github", listIssues: mockListIssues, updateIssue: mockUpdateIssue };
+      }
+      return { name: "stub" };
+    });
+
+    const { pollBacklog } = await import("../lib/services");
+    await pollBacklog();
+
+    expect(mockUpdateIssue).toHaveBeenCalledWith(
+      "456",
+      {
+        labels: ["agent:in-review"],
+        removeLabels: ["agent:in-progress"],
+        comment: "PR opened — moving to review.",
+      },
+      expect.objectContaining({ tracker: { plugin: "github" } }),
+    );
+  });
 });

@@ -238,6 +238,61 @@ async function labelIssuesForVerification(
   }
 }
 
+// Track which issues we've transitioned to in-review. Kept separate from
+// processedIssues (the merged→verification step) because an issue is in-review
+// *before* it merges — sharing one set would block the later merged transition.
+const inReviewIssues = new Set<string>();
+
+/** Transition issues to in-review when their session's PR is open (pre-merge). */
+async function markIssuesInReview(
+  sessions: Session[],
+  config: LoadedConfig,
+  registry: PluginRegistry,
+): Promise<void> {
+  const openPrSessions = sessions.filter(
+    (s) =>
+      s.lifecycle.pr.state === "open" &&
+      s.issueId &&
+      !inReviewIssues.has(`${s.projectId}:${s.issueId}`),
+  );
+
+  for (const session of openPrSessions) {
+    const key = `${session.projectId}:${session.issueId}`;
+    const project = config.projects[session.projectId];
+    if (!project?.tracker?.plugin) {
+      inReviewIssues.add(key);
+      continue;
+    }
+
+    const tracker = registry.get<Tracker>("tracker", project.tracker.plugin);
+    if (!tracker?.updateIssue) {
+      inReviewIssues.add(key);
+      continue;
+    }
+
+    const issueId = session.issueId;
+    if (!issueId) {
+      inReviewIssues.add(key);
+      continue;
+    }
+
+    try {
+      await tracker.updateIssue(
+        issueId,
+        {
+          labels: ["agent:in-review"],
+          removeLabels: ["agent:in-progress"],
+          comment: "PR opened — moving to review.",
+        },
+        project,
+      );
+    } catch (err) {
+      console.error(`[backlog] Failed to mark issue ${session.issueId} in review:`, err);
+    }
+    inReviewIssues.add(key);
+  }
+}
+
 /**
  * Detect reopened issues (open + agent:done label) and swap the label
  * back to agent:backlog so pollBacklog picks them up on the next cycle.
@@ -288,6 +343,9 @@ export async function pollBacklog(): Promise<void> {
     const allSessions = await sessionManager.list();
     // Label issues for verification when PRs are merged
     await labelIssuesForVerification(allSessions, config, registry);
+
+    // Transition issues to in-review when their PR is open (pre-merge)
+    await markIssuesInReview(allSessions, config, registry);
 
     // Detect reopened issues: open state + agent:done label → relabel as agent:backlog
     await relabelReopenedIssues(config, registry);
